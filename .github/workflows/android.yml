@@ -36,13 +36,18 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
+      - name: Install OpenSSL build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y perl make
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Initialize Tauri Android
         run: |
           if [ ! -d "src-tauri/gen/android" ]; then
-            pnpm tauri android init
+            pnpm tauri android init --ci
           fi
 
       - name: Detect Android SDK requirements
@@ -64,14 +69,12 @@ jobs:
 
           BUILD_TOOLS=$(
             grep -oP 'buildToolsVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
-            head -n 1 ||
-            true
+            head -n 1 || true
           )
 
           NDK_VERSION=$(
             grep -oP 'ndkVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
-            head -n 1 ||
-            true
+            head -n 1 || true
           )
 
           BUILD_TOOLS="${BUILD_TOOLS:-37.0.0}"
@@ -97,18 +100,20 @@ jobs:
 
           PLATFORM_PACKAGE="platforms;android-${COMPILE_SDK}"
 
-          # GitHub Ubuntu 24.04 runners publish API 37 as android-37.0
+          # API 37 is published as android-37.0 on the current
+          # Ubuntu 24.04 GitHub runner images.
           if [ "$COMPILE_SDK" = "37" ]; then
             PLATFORM_PACKAGE="platforms;android-37.0"
           fi
+
+          echo "Installing Android platform:"
+          echo "$PLATFORM_PACKAGE"
 
           sdkmanager \
             "$PLATFORM_PACKAGE" \
             "build-tools;${BUILD_TOOLS}" \
             "ndk;${NDK_VERSION}"
 
-          # Compatibility alias:
-          # some Gradle configurations still look for android-37.
           if [ "$COMPILE_SDK" = "37" ] &&
              [ -d "$ANDROID_HOME/platforms/android-37.0" ] &&
              [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
@@ -125,10 +130,32 @@ jobs:
           fi
 
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
 
+          echo "Android NDK:"
+          echo "$NDK_PATH"
+
       - name: Build APK
-        run: pnpm tauri android build --apk
+        shell: bash
+        env:
+          OPENSSL_STATIC: "1"
+        run: |
+          set -euo pipefail
+
+          pnpm tauri android build --apk --ci
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find \
+            src-tauri/gen/android/app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

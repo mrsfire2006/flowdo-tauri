@@ -29,6 +29,7 @@ sea-orm = { version = "2.0.4", features = ["sqlx-sqlite", "runtime-tokio-rustls"
 sea-orm-migration = { version = "2.0.4", features = ["runtime-tokio-rustls", "sqlx-sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
