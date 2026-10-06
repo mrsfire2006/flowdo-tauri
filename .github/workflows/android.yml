@@ -29,7 +29,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -71,21 +71,20 @@ jobs:
 
           COMPILE_SDK="$(
             grep -oP 'compileSdk\s*=\s*\K[0-9]+' "$GRADLE_FILE" |
-            head -n 1
+            head -n 1 || true
           )"
 
           BUILD_TOOLS="$(
             grep -oP 'buildToolsVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
-            head -n 1 ||
-            true
+            head -n 1 || true
           )"
 
           NDK_VERSION="$(
             grep -oP 'ndkVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
-            head -n 1 ||
-            true
+            head -n 1 || true
           )"
 
+          COMPILE_SDK="${COMPILE_SDK:-37}"
           BUILD_TOOLS="${BUILD_TOOLS:-37.0.0}"
           NDK_VERSION="${NDK_VERSION:-27.3.13750724}"
 
@@ -93,9 +92,9 @@ jobs:
           echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
           echo "NDK_VERSION=$NDK_VERSION" >> "$GITHUB_ENV"
 
-          echo "compileSdk: $COMPILE_SDK"
-          echo "buildTools: $BUILD_TOOLS"
-          echo "ndkVersion: $NDK_VERSION"
+          echo "compileSdk=$COMPILE_SDK"
+          echo "buildTools=$BUILD_TOOLS"
+          echo "ndkVersion=$NDK_VERSION"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -109,7 +108,8 @@ jobs:
 
           PLATFORM_PACKAGE="platforms;android-${COMPILE_SDK}"
 
-          # GitHub Ubuntu 24.04 publishes API 37 as android-37.0.
+          # Current Ubuntu GitHub runner images expose API 37
+          # as platforms;android-37.0.
           if [ "$COMPILE_SDK" = "37" ]; then
             PLATFORM_PACKAGE="platforms;android-37.0"
           fi
@@ -135,8 +135,7 @@ jobs:
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
 
-          # Some Gradle configurations still expect android-37,
-          # while the current runner installs android-37.0.
+          # Gradle/Tauri compatibility for API 37.
           if [ "$COMPILE_SDK" = "37" ] &&
              [ -d "$ANDROID_HOME/platforms/android-37.0" ] &&
              [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
@@ -145,7 +144,10 @@ jobs:
               "$ANDROID_HOME/platforms/android-37"
           fi
 
-      - name: Configure Android NDK tools for OpenSSL
+          echo "Android SDK configured."
+          echo "ANDROID_NDK_HOME=$NDK_PATH"
+
+      - name: Configure Android NDK toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -153,21 +155,32 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
           if [ ! -d "$NDK_BIN" ]; then
-            echo "::error::NDK toolchain directory not found: $NDK_BIN"
+            echo "::error::NDK toolchain directory not found:"
+            echo "$NDK_BIN"
             exit 1
           fi
 
-          if [ ! -x "$NDK_BIN/llvm-ranlib" ]; then
-            echo "::error::llvm-ranlib not found: $NDK_BIN/llvm-ranlib"
-            exit 1
-          fi
+          for tool in \
+            clang \
+            clang++ \
+            llvm-ar \
+            llvm-ranlib \
+            llvm-strip; do
 
-          # OpenSSL's Android build expects the NDK toolchain
-          # to be available through PATH.
+            if [ ! -x "$NDK_BIN/$tool" ]; then
+              echo "::error::Missing NDK tool: $NDK_BIN/$tool"
+              exit 1
+            fi
+          done
+
+          # GITHUB_PATH affects following steps.
           echo "$NDK_BIN" >> "$GITHUB_PATH"
 
-          # NDK provides llvm-ranlib rather than the old
-          # target-specific ranlib executable names.
+          # This affects the current step as well.
+          export PATH="$NDK_BIN:$PATH"
+
+          # OpenSSL/openssl-src can request the old target-specific
+          # ranlib names. Map them to the LLVM tool shipped by the NDK.
           ln -sf \
             "$NDK_BIN/llvm-ranlib" \
             "$NDK_BIN/aarch64-linux-android-ranlib"
@@ -184,35 +197,72 @@ jobs:
             "$NDK_BIN/llvm-ranlib" \
             "$NDK_BIN/x86_64-linux-android-ranlib"
 
-          # Explicitly tell Cargo/cc which ranlib to use.
+          # Tell the cc crate explicitly which ranlib to use.
+          echo "RANLIB=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_aarch64-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_armv7-linux-androideabi=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "RANLIB_armv7_linux_androideabi=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_i686-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "RANLIB_i686_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_x86_64-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "RANLIB_x86_64_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
 
-          echo "NDK toolchain:"
-          echo "$NDK_BIN"
+          # Also provide the LLVM archiver explicitly.
+          echo "AR=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_aarch64-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_armv7-linux-androideabi=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_armv7_linux_androideabi=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_i686-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_i686_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_x86_64-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "AR_x86_64_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
 
-          echo "Checking ranlib:"
+          echo "Android NDK toolchain configured."
+          echo "NDK_BIN=$NDK_BIN"
+
+          echo "Checking tools:"
+          command -v llvm-ranlib
+          command -v llvm-ar
           command -v aarch64-linux-android-ranlib
-          aarch64-linux-android-ranlib --version || true
+
+          echo "ranlib resolves to:"
+          readlink -f "$(command -v aarch64-linux-android-ranlib)"
 
       - name: Verify Android environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "Java:"
+          java -version
 
-          echo "Rust target:"
-          rustc --print target-list | grep -E \
-            'aarch64-linux-android|armv7-linux-androideabi|i686-linux-android|x86_64-linux-android'
+          echo
+          echo "Node:"
+          node --version
 
+          echo
+          echo "pnpm:"
+          pnpm --version
+
+          echo
+          echo "Rust:"
+          rustc --version
+
+          echo
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+          echo
           echo "Android NDK:"
+          echo "$ANDROID_NDK_HOME"
+
+          echo
+          echo "NDK compiler:"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
+          echo
           echo "OpenSSL ranlib:"
           command -v aarch64-linux-android-ranlib
 
@@ -233,7 +283,8 @@ jobs:
           APK_DIR="src-tauri/gen/android/app/build/outputs/apk"
 
           if [ ! -d "$APK_DIR" ]; then
-            echo "::error::APK output directory does not exist: $APK_DIR"
+            echo "::error::APK output directory not found:"
+            echo "$APK_DIR"
             exit 1
           fi
 
