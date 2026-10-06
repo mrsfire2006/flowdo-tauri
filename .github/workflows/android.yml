@@ -34,7 +34,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-            targets: aarch64-linux-android
+          targets: aarch64-linux-android
 
       - name: Install OpenSSL build dependencies
         run: |
@@ -271,28 +271,105 @@ jobs:
 
           pnpm tauri android build --apk --ci --target aarch64
 
-      - name: Find APK
+      - name: Sign APK
         shell: bash
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           APK_DIR="src-tauri/gen/android/app/build/outputs/apk"
 
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::APK output directory not found:"
-            echo "$APK_DIR"
+          APK="$(find "$APK_DIR" -type f -name "*.apk" | head -n 1)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::No APK found"
             exit 1
           fi
 
-          echo "Generated APK files:"
-          find "$APK_DIR" \
-            -type f \
-            -name "*.apk" \
-            -print
+          echo "Unsigned APK:"
+          echo "$APK"
+
+          BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+
+          if [ ! -x "$ZIPALIGN" ]; then
+            echo "::error::zipalign not found: $ZIPALIGN"
+            exit 1
+          fi
+
+          if [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner not found: $APKSIGNER"
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/flowdo-upload.jks"
+          ALIGNED_APK="$RUNNER_TEMP/flowdo-aligned.apk"
+          SIGNED_APK="$GITHUB_WORKSPACE/FlowDo.apk"
+
+          printf '%s' "$ANDROID_KEY_BASE64" |
+            base64 --decode > "$KEYSTORE"
+
+          chmod 600 "$KEYSTORE"
+
+          echo "Aligning APK..."
+
+          "$ZIPALIGN" \
+            -P 16 \
+            -f \
+            -v \
+            4 \
+            "$APK" \
+            "$ALIGNED_APK"
+
+          echo "Signing APK..."
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass "env:ANDROID_KEY_PASSWORD" \
+            --key-pass "env:ANDROID_KEY_PASSWORD" \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          echo "Verifying APK signature..."
+
+          "$APKSIGNER" verify \
+            --verbose \
+            "$SIGNED_APK"
+
+          echo "Verifying 16 KB ZIP alignment..."
+
+          "$ZIPALIGN" \
+            -c \
+            -P 16 \
+            -v \
+            4 \
+            "$SIGNED_APK"
+
+          echo "Signed APK created:"
+          ls -lh "$SIGNED_APK"
+
+      - name: Find signed APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "FlowDo.apk" ]; then
+            echo "::error::Signed APK not found"
+            exit 1
+          fi
+
+          echo "Signed APK:"
+          ls -lh FlowDo.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: flowdo-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: FlowDo.apk
           if-no-files-found: error
