@@ -34,7 +34,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: armv7-linux-androideabi
 
       - name: Install OpenSSL build dependencies
         run: |
@@ -52,6 +52,13 @@ jobs:
           if [ ! -d "src-tauri/gen/android" ]; then
             pnpm tauri android init --ci
           fi
+
+      - name: Generate app icons
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pnpm tauri icon ./app-icon.png
 
       - name: Detect Android build requirements
         shell: bash
@@ -151,80 +158,41 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
           if [ ! -d "$NDK_BIN" ]; then
-            echo "::error::NDK toolchain directory not found:"
-            echo "$NDK_BIN"
+            echo "::error::NDK toolchain directory not found: $NDK_BIN"
             exit 1
           fi
 
-          for tool in \
-            clang \
-            clang++ \
-            llvm-ar \
-            llvm-ranlib \
-            llvm-strip; do
-
+          for tool in clang clang++ llvm-ar llvm-ranlib llvm-strip; do
             if [ ! -x "$NDK_BIN/$tool" ]; then
               echo "::error::Missing NDK tool: $NDK_BIN/$tool"
               exit 1
             fi
           done
 
-          # GITHUB_PATH affects following steps.
+          export PATH="$NDK_BIN:$PATH"
           echo "$NDK_BIN" >> "$GITHUB_PATH"
 
-          # This affects the current step as well.
-          export PATH="$NDK_BIN:$PATH"
-
-          # OpenSSL/openssl-src can request the old target-specific
-          # ranlib names. Map them to the LLVM tool shipped by the NDK.
-          ln -sf \
-            "$NDK_BIN/llvm-ranlib" \
-            "$NDK_BIN/aarch64-linux-android-ranlib"
-
+          # OpenSSL expects the old ARMv7 ranlib name.
           ln -sf \
             "$NDK_BIN/llvm-ranlib" \
             "$NDK_BIN/arm-linux-androideabi-ranlib"
 
-          ln -sf \
-            "$NDK_BIN/llvm-ranlib" \
-            "$NDK_BIN/i686-linux-android-ranlib"
-
-          ln -sf \
-            "$NDK_BIN/llvm-ranlib" \
-            "$NDK_BIN/x86_64-linux-android-ranlib"
-
-          # Tell the cc crate explicitly which ranlib to use.
+          # ARMv7 only.
           echo "RANLIB=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_aarch64-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_aarch64_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_armv7-linux-androideabi=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
           echo "RANLIB_armv7_linux_androideabi=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_i686-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_i686_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_x86_64-linux-android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
-          echo "RANLIB_x86_64_linux_android=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
 
-          # Also provide the LLVM archiver explicitly.
           echo "AR=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_aarch64-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_aarch64_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
           echo "AR_armv7-linux-androideabi=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
           echo "AR_armv7_linux_androideabi=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_i686-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_i686_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_x86_64-linux-android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "AR_x86_64_linux_android=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
 
-          echo "Android NDK toolchain configured."
-          echo "NDK_BIN=$NDK_BIN"
+          echo "Android ARMv7 NDK toolchain configured."
 
-          echo "Checking tools:"
           command -v llvm-ranlib
-          command -v llvm-ar
-          command -v aarch64-linux-android-ranlib
+          command -v arm-linux-androideabi-ranlib
 
           echo "ranlib resolves to:"
-          readlink -f "$(command -v aarch64-linux-android-ranlib)"
+          readlink -f "$(command -v arm-linux-androideabi-ranlib)"
 
       - name: Verify Android environment
         shell: bash
@@ -260,7 +228,7 @@ jobs:
 
           echo
           echo "OpenSSL ranlib:"
-          command -v aarch64-linux-android-ranlib
+          command -v arm-linux-androideabi-ranlib
 
       - name: Build APK
         shell: bash
@@ -269,7 +237,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          pnpm tauri android build --apk --ci --target aarch64
+          pnpm tauri android build --apk --ci --target armv7
 
       - name: Sign APK
         shell: bash
