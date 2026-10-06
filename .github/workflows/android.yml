@@ -8,115 +8,127 @@ permissions:
 
 jobs:
   build-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v4
         with:
           version: 11
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v6
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: platform-tools
+          java-version: '17'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: >-
-            aarch64-linux-android,
-            armv7-linux-androideabi,
-            i686-linux-android,
-            x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Initialize Tauri Android project
-        shell: bash
+      - name: Initialize Tauri Android
         run: |
           if [ ! -d "src-tauri/gen/android" ]; then
-            pnpm tauri android init --ci
+            pnpm tauri android init
           fi
 
-      - name: Detect Android build requirements
+      - name: Detect Android SDK requirements
         shell: bash
         run: |
           set -euo pipefail
 
           GRADLE_FILE="src-tauri/gen/android/app/build.gradle.kts"
 
-          echo "Using: $GRADLE_FILE"
+          if [ ! -f "$GRADLE_FILE" ]; then
+            echo "::error::Could not find $GRADLE_FILE"
+            exit 1
+          fi
 
-          COMPILE_SDK=$(grep -oP 'compileSdk\s*=\s*\K[0-9]+' "$GRADLE_FILE" | head -n 1 || true)
-          BUILD_TOOLS=$(grep -oP 'buildToolsVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" | head -n 1 || true)
-          NDK_VERSION=$(grep -oP 'ndkVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" | head -n 1 || true)
+          COMPILE_SDK=$(
+            grep -oP 'compileSdk\s*=\s*\K[0-9]+' "$GRADLE_FILE" |
+            head -n 1
+          )
 
-          COMPILE_SDK="${COMPILE_SDK:-36}"
-          BUILD_TOOLS="${BUILD_TOOLS:-36.0.0}"
-          NDK_VERSION="${NDK_VERSION:-28.2.13676358}"
+          BUILD_TOOLS=$(
+            grep -oP 'buildToolsVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
+            head -n 1 ||
+            true
+          )
 
-          echo "COMPILE_SDK=$COMPILE_SDK"
-          echo "BUILD_TOOLS=$BUILD_TOOLS"
-          echo "NDK_VERSION=$NDK_VERSION"
+          NDK_VERSION=$(
+            grep -oP 'ndkVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" |
+            head -n 1 ||
+            true
+          )
+
+          BUILD_TOOLS="${BUILD_TOOLS:-37.0.0}"
+          NDK_VERSION="${NDK_VERSION:-27.3.13750724}"
 
           echo "COMPILE_SDK=$COMPILE_SDK" >> "$GITHUB_ENV"
           echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
           echo "NDK_VERSION=$NDK_VERSION" >> "$GITHUB_ENV"
 
-      - name: Install Android build components
+          echo "compileSdk: $COMPILE_SDK"
+          echo "buildTools: $BUILD_TOOLS"
+          echo "ndkVersion: $NDK_VERSION"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK requirements
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          PLATFORM_PACKAGE="platforms;android-${COMPILE_SDK}"
+
+          # GitHub Ubuntu 24.04 runners publish API 37 as android-37.0
+          if [ "$COMPILE_SDK" = "37" ]; then
+            PLATFORM_PACKAGE="platforms;android-37.0"
+          fi
 
           sdkmanager \
-            "platforms;android-${COMPILE_SDK}" \
+            "$PLATFORM_PACKAGE" \
             "build-tools;${BUILD_TOOLS}" \
             "ndk;${NDK_VERSION}"
 
-          NDK_PATH="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          # Compatibility alias:
+          # some Gradle configurations still look for android-37.
+          if [ "$COMPILE_SDK" = "37" ] &&
+             [ -d "$ANDROID_HOME/platforms/android-37.0" ] &&
+             [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s \
+              "$ANDROID_HOME/platforms/android-37.0" \
+              "$ANDROID_HOME/platforms/android-37"
+          fi
+
+          NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
 
           if [ ! -d "$NDK_PATH" ]; then
-            echo "::error::NDK was not installed: $NDK_PATH"
+            echo "::error::NDK not found at $NDK_PATH"
             exit 1
           fi
 
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
 
-      - name: Build Android APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm tauri android build --apk --debug --ci
-
-      - name: Find APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          find src-tauri/gen/android/app/build/outputs/apk \
-            -type f \
-            -name "*.apk" \
-            -print
+      - name: Build APK
+        run: pnpm tauri android build --apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
