@@ -1,0 +1,126 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-linux-android,
+            armv7-linux-androideabi,
+            i686-linux-android,
+            x86_64-linux-android
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Initialize Tauri Android project
+        shell: bash
+        run: |
+          if [ ! -d "src-tauri/gen/android" ]; then
+            pnpm tauri android init --ci
+          fi
+
+      - name: Detect Android build requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLE_FILE="src-tauri/gen/android/app/build.gradle.kts"
+
+          echo "Using: $GRADLE_FILE"
+
+          COMPILE_SDK=$(grep -oP 'compileSdk\s*=\s*\K[0-9]+' "$GRADLE_FILE" | head -n 1 || true)
+          BUILD_TOOLS=$(grep -oP 'buildToolsVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" | head -n 1 || true)
+          NDK_VERSION=$(grep -oP 'ndkVersion\s*=\s*"\K[^"]+' "$GRADLE_FILE" | head -n 1 || true)
+
+          COMPILE_SDK="${COMPILE_SDK:-36}"
+          BUILD_TOOLS="${BUILD_TOOLS:-36.0.0}"
+          NDK_VERSION="${NDK_VERSION:-28.2.13676358}"
+
+          echo "COMPILE_SDK=$COMPILE_SDK"
+          echo "BUILD_TOOLS=$BUILD_TOOLS"
+          echo "NDK_VERSION=$NDK_VERSION"
+
+          echo "COMPILE_SDK=$COMPILE_SDK" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
+          echo "NDK_VERSION=$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platforms;android-${COMPILE_SDK}" \
+            "build-tools;${BUILD_TOOLS}" \
+            "ndk;${NDK_VERSION}"
+
+          NDK_PATH="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+
+          if [ ! -d "$NDK_PATH" ]; then
+            echo "::error::NDK was not installed: $NDK_PATH"
+            exit 1
+          fi
+
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+
+      - name: Build Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm tauri android build --apk --debug --ci
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find src-tauri/gen/android/app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowdo-android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
